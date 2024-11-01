@@ -1,0 +1,325 @@
+*&---------------------------------------------------------------------*
+*& Report ZRNAT_DTEL_MODIFY6
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT zrnat_dtel_modify6.
+
+TYPE-POOLS: truxs.
+
+DATA: lt_excel TYPE TABLE OF alsmex_tabline,
+      lt_data  TYPE TABLE OF dd04v,    " 엑셀에서 읽어온 데이터를 담을 테이블
+      ls_data  TYPE dd04v,             " 한 행의 데이터 구조체
+      ls_tadir TYPE tadir,             " TADIR 정보 구조체
+      lv_msg   TYPE string.
+
+DATA: lv_success_count TYPE i VALUE 0,          " 성공 카운트
+      lv_error_count   TYPE i VALUE 0,          " 오류 카운트
+      lv_success_text  TYPE char20,             " 성공 메시지에 사용될 문자열
+      lv_error_text    TYPE char20.             " 오류 메시지에 사용될 문자열
+
+DATA: gt_display TYPE TABLE OF dd04v.  " ALV에 표시할 데이터 테이블
+
+DATA: go_alv_grid TYPE REF TO cl_gui_alv_grid.  " ALV Grid 객체
+
+SELECTION-SCREEN BEGIN OF LINE.
+  SELECTION-SCREEN COMMENT 1(8) TEXT-001 FOR FIELD p_file.
+  SELECTION-SCREEN PUSHBUTTON (20) TEXT-002 USER-COMMAND template.
+SELECTION-SCREEN END OF LINE.
+
+SELECTION-SCREEN SKIP 1.
+
+SELECTION-SCREEN BEGIN OF LINE.
+  SELECTION-SCREEN COMMENT 1(8) TEXT-003 FOR FIELD p_file.
+  PARAMETERS p_file TYPE rlgrap-filename.
+SELECTION-SCREEN END OF LINE.
+
+"---------------- 파일 선택 대화상자 ----------------
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
+  PERFORM upload_file_dialog.
+
+"---------------- 다운로드 버튼 동작 ----------------
+
+AT SELECTION-SCREEN.
+  CASE sy-ucomm.
+    WHEN 'TEMPLATE'.
+      PERFORM download_template.
+  ENDCASE.
+
+"---------------- 파일 선택 대화상자 기능 ----------------
+FORM upload_file_dialog.
+  DATA: lt_file_table TYPE filetable,
+        ls_file_table TYPE file_table,
+        lv_rc         TYPE i.
+
+  CALL METHOD cl_gui_frontend_services=>file_open_dialog
+    EXPORTING
+      window_title         = '업로드할 파일 선택'
+      file_filter          = 'All Files (*.*)|*.*|'
+    CHANGING
+      file_table           = lt_file_table
+      rc                   = lv_rc
+    EXCEPTIONS
+      cntl_error           = 1
+      error_no_gui         = 2
+      not_supported_by_gui = 3
+      OTHERS               = 4.
+
+  IF sy-subrc <> 0 OR lv_rc = 0.
+    MESSAGE '파일을 선택할 수 없습니다.' TYPE 'E'.
+  ELSE.
+    READ TABLE lt_file_table INTO ls_file_table INDEX 1.
+    IF sy-subrc = 0.
+      p_file = ls_file_table-filename.
+    ENDIF.
+  ENDIF.
+ENDFORM.
+
+"---------------- 템플릿 다운로드 기능 ----------------
+FORM download_template.
+  DATA: lt_template       TYPE TABLE OF string,
+        lv_header         TYPE string,
+        lv_fullpath       TYPE string,
+        lv_filename       TYPE string VALUE 'DTEL_UPLOAD_TEMPLATE.csv',
+        lv_user_action    TYPE i,
+        lv_path           TYPE string,
+        lv_file_extension TYPE string VALUE '.csv'.
+
+  " 템플릿 헤더 구성
+  lv_header = 'ROLLNAME,DDLANGUAGE,DOMNAME,DDTEXT,REPTEXT,SCRTEXT_S,SCRTEXT_M,SCRTEXT_L,HEADLEN,SCRLEN1,SCRLEN2,SCRLEN3,DEVCLASS'.
+  APPEND lv_header TO lt_template.
+
+  " 파일 저장 위치 대화상자 호출
+  CALL METHOD cl_gui_frontend_services=>file_save_dialog
+    EXPORTING
+      window_title              = '파일 저장 위치 선택'
+      default_file_name         = lv_filename
+      file_filter               = 'CSV Files (*.csv)|*.csv|'
+      prompt_on_overwrite       = abap_true
+    CHANGING
+      filename                  = lv_filename
+      path                      = lv_path
+      fullpath                  = lv_fullpath
+      user_action               = lv_user_action
+    EXCEPTIONS
+      cntl_error                = 1
+      error_no_gui              = 2
+      not_supported_by_gui      = 3
+      invalid_default_file_name = 4
+      OTHERS                    = 5.
+
+  " 다운로드 실행 여부 확인
+  IF lv_user_action = cl_gui_frontend_services=>action_ok AND lv_fullpath IS NOT INITIAL.
+    lv_filename = lv_fullpath.
+
+    " CSV 파일로 다운로드
+    CALL FUNCTION 'GUI_DOWNLOAD'
+      EXPORTING
+        filename              = lv_filename
+        filetype              = 'ASC'
+        write_field_separator = ','
+      TABLES
+        data_tab              = lt_template
+      EXCEPTIONS
+        file_write_error      = 1
+        OTHERS                = 2.
+
+    IF sy-subrc = 0.
+      MESSAGE '엑셀 템플릿 다운로드 완료' TYPE 'I'.
+    ELSE.
+      MESSAGE '다운로드 중 오류 발생' TYPE 'E'.
+    ENDIF.
+  ELSE.
+    " 취소 시 메시지
+    MESSAGE '파일 저장이 취소되었습니다.' TYPE 'I'.
+  ENDIF.
+ENDFORM.
+
+"---------------- 엑셀 데이터 로드 ----------------
+
+DATA: lv_devclass TYPE string.
+
+START-OF-SELECTION.
+
+  " 엑셀 파일을 내부 테이블로 가져오기
+  CALL FUNCTION 'ALSM_EXCEL_TO_INTERNAL_TABLE'
+    EXPORTING
+      filename                = p_file
+      i_begin_col             = 1
+      i_begin_row             = 2
+      i_end_col               = 13
+      i_end_row               = 9999
+    TABLES
+      intern                  = lt_excel
+    EXCEPTIONS
+      inconsistent_parameters = 1
+      upload_ole              = 2
+      OTHERS                  = 3.
+
+  IF sy-subrc <> 0.
+    MESSAGE '엑셀 파일을 읽어올 수 없습니다.' TYPE 'E'.
+    RETURN.
+  ENDIF.
+
+  " 데이터 매핑 및 추가
+  LOOP AT lt_excel INTO DATA(ls_excel_line).
+    CASE ls_excel_line-col.
+      WHEN 1. ls_data-rollname = ls_excel_line-value.
+      WHEN 2. ls_data-dtelmaster = ls_excel_line-value.
+      WHEN 3. ls_data-domname = ls_excel_line-value.
+      WHEN 4. ls_data-ddtext = ls_excel_line-value.
+      WHEN 5. ls_data-reptext = ls_excel_line-value.
+      WHEN 6. ls_data-scrtext_s = ls_excel_line-value.
+      WHEN 7. ls_data-scrtext_m = ls_excel_line-value.
+      WHEN 8. ls_data-scrtext_l = ls_excel_line-value.
+      WHEN 9. ls_data-headlen = ls_excel_line-value.
+      WHEN 10. ls_data-scrlen1 = ls_excel_line-value.
+      WHEN 11. ls_data-scrlen2 = ls_excel_line-value.
+      WHEN 12. ls_data-scrlen3 = ls_excel_line-value.
+      WHEN 13. lv_devclass = ls_excel_line-value. " 13번째 열은 별도 변수에 저장
+    ENDCASE.
+
+   IF ls_excel_line-col = 13 AND ls_data-rollname IS NOT INITIAL.
+      APPEND ls_data TO gt_display.
+      APPEND ls_data TO lt_data.  
+      CLEAR ls_data.
+    ENDIF.
+  ENDLOOP.
+
+  " 데이터 처리 루프
+  LOOP AT lt_data INTO ls_data.
+    ls_tadir-obj_name = ls_data-rollname.
+    ls_tadir-devclass = lv_devclass.
+
+    CALL FUNCTION 'ZFNAT01_BLD_ELE_MODIFY2'
+      EXPORTING
+        is_dd04v      = ls_data
+        is_tadir      = ls_tadir
+      EXCEPTIONS
+        illegal_input = 1
+        put_failure   = 2
+        OTHERS        = 3.
+
+    IF sy-subrc = 0.
+      lv_success_count = lv_success_count + 1.
+    ELSE.
+      lv_error_count = lv_error_count + 1.
+    ENDIF.
+  ENDLOOP.
+
+  " 결과 메시지 출력
+  WRITE lv_success_count TO lv_success_text.
+  WRITE lv_error_count TO lv_error_text.
+
+  CONCATENATE lv_success_text '개의 데이터 엘리먼트가 성공적으로 생성/수정되었습니다.'
+              lv_error_text '개의 데이터 엘리먼트 생성/수정 중 오류 발생.' INTO lv_msg SEPARATED BY space.
+
+  MESSAGE lv_msg TYPE 'I'.
+
+ " gt_display[] = lt_data[].
+
+  " 데이터가 있는지 확인
+  IF gt_display IS INITIAL.
+    MESSAGE '표시할 데이터가 없습니다.' TYPE 'E'.
+    RETURN.
+  ENDIF.
+
+  " ALV 데이터 출력
+  PERFORM display_alv_data.
+
+"---------------- ALV 데이터 출력 서브루틴 ----------------
+FORM display_alv_data.
+
+  CREATE OBJECT go_alv_grid
+    EXPORTING
+      i_parent = cl_gui_container=>screen0.
+
+
+  " 필드 카탈로그 설정
+  DATA: lt_fieldcat TYPE lvc_t_fcat,
+        ls_fieldcat TYPE lvc_s_fcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'ROLLNAME'.
+  ls_fieldcat-seltext   = 'Roll Name'.
+  ls_fieldcat-outputlen = 30.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'DTELMASTER'.
+  ls_fieldcat-seltext   = 'Dtel Master'.
+  ls_fieldcat-outputlen = 20.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'DOMNAME'.
+  ls_fieldcat-seltext   = 'Domain Name'.
+  ls_fieldcat-outputlen = 20.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'DDTEXT'.
+  ls_fieldcat-seltext   = 'Description'.
+  ls_fieldcat-outputlen = 40.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'REPTEXT'.
+  ls_fieldcat-seltext   = 'Report Text'.
+  ls_fieldcat-outputlen = 20.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'SCRTEXT_S'.
+  ls_fieldcat-seltext   = 'Short Text'.
+  ls_fieldcat-outputlen = 15.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'SCRTEXT_M'.
+  ls_fieldcat-seltext   = 'Medium Text'.
+  ls_fieldcat-outputlen = 30.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'SCRTEXT_L'.
+  ls_fieldcat-seltext   = 'Long Text'.
+  ls_fieldcat-outputlen = 40.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'HEADLEN'.
+  ls_fieldcat-seltext   = 'Header Length'.
+  ls_fieldcat-outputlen = 5.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'SCRLEN1'.
+  ls_fieldcat-seltext   = 'Screen Length 1'.
+  ls_fieldcat-outputlen = 5.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'SCRLEN2'.
+  ls_fieldcat-seltext   = 'Screen Length 2'.
+  ls_fieldcat-outputlen = 5.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'SCRLEN3'.
+  ls_fieldcat-seltext   = 'Screen Length 3'.
+  ls_fieldcat-outputlen = 5.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  " ALV 데이터 표시
+  CALL METHOD go_alv_grid->set_table_for_first_display
+    EXPORTING
+      i_structure_name = 'DD04V'
+    CHANGING
+      it_outtab        = gt_display
+      it_fieldcatalog  = lt_fieldcat.
+
+  " 데이터 새로고침
+"  CALL METHOD go_alv_grid->refresh_table_display.
+ENDFORM.

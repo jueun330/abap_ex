@@ -136,11 +136,18 @@ FORM download_template.
   ENDIF.
 ENDFORM.
 
+
+"---------------- 데이터 로드 및 매핑 ----------------
+START-OF-SELECTION.
+  " 데이터 로드 수행 후 gt_display에 데이터를 넣음
+  PERFORM load_data.
+
 "---------------- 엑셀 데이터 로드 ----------------
 
-DATA: lv_devclass TYPE string.
-
-START-OF-SELECTION.
+FORM load_data.
+  DATA: lt_excel TYPE TABLE OF alsmex_tabline,  " 엑셀 데이터 임시 저장 테이블
+        ls_excel_line TYPE alsmex_tabline,      " 엑셀 데이터 한 행
+        lv_devclass TYPE string.                " 개발 클래스
 
   " 엑셀 파일을 내부 테이블로 가져오기
   CALL FUNCTION 'ALSM_EXCEL_TO_INTERNAL_TABLE'
@@ -235,7 +242,6 @@ FORM display_alv_data.
     EXPORTING
       i_parent = cl_gui_container=>screen0.
 
-
   " 필드 카탈로그 설정
   DATA: lt_fieldcat TYPE lvc_t_fcat,
         ls_fieldcat TYPE lvc_s_fcat.
@@ -320,6 +326,6 @@ FORM display_alv_data.
       it_outtab        = gt_display
       it_fieldcatalog  = lt_fieldcat.
 
-  " 데이터 새로고침
-"  CALL METHOD go_alv_grid->refresh_table_display.
+  " 변경 사항을 즉시 화면에 반영
+  CALL METHOD cl_gui_cfw=>flush.
 ENDFORM.
